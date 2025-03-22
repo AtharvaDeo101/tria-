@@ -1,4 +1,4 @@
-predicted_date,predicted_product_id,predicted_demand
-2025-01-01,P001,139.38385
-2025-01-02,P001,138.46976
-2025-01-03,P001,138.30525
+predicted_date,predicted_product_id,predicted_product_name,predicted_demand
+2025-01-01,MED003,Amoxicillin,109.16
+2025-01-03,MED003,Amoxicillin,109.02
+2025-01-02,MED003,Amoxicillin,108.16
