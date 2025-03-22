@@ -1,90 +1,107 @@
-# main.py
-import pandas as pd
-import numpy as np
-from utils.data_preprocessing import load_data, preprocess_data
-from utils.visualization import plot_predictions
-from models.demand_model import DemandForecastModel
-from datetime import timedelta
+from fastapi import FastAPI, Request, Depends, Form, HTTPException
+from fastapi.templating import Jinja2Templates
+from sqlalchemy.orm import Session
+from database import SessionLocal, ShopKeeper, MainSupplier
 
-def generate_predictions(file_path, forecast_days=7):
-    # Load and preprocess data
-    print("Loading and preprocessing data...")
-    df = load_data(file_path)
-    X, y, feature_scaler = preprocess_data(df)
+from pydantic import BaseModel, EmailStr
+from bcrypt import hashpw, gensalt
 
-    # Train the model
-    print("Training demand forecast model...")
-    model = DemandForecastModel()
-    model.train(X, y)
+app = FastAPI()
+templates = Jinja2Templates(directory="templates")
 
-    # Prepare future data for prediction
-    print(f"Generating predictions for {forecast_days} days...")
-    last_date = pd.to_datetime(df['Date']).max()
-    products = df['Product_ID'].unique()
-    all_predictions = []
+# Dependency to get database session
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
-    # Store feature names from training data
-    feature_names = X.columns
+@app.get("/shopkeeper_signup")
+async def signup_page(request: Request):
+    return templates.TemplateResponse("shopkeeper_signup.html", {"request": request})
 
-    for product_id in products:
-        product_df = df[df['Product_ID'] == product_id]
-        last_row = product_df.iloc[-1]
-        
-        for i in range(forecast_days):
-            next_date = last_date + timedelta(days=i + 1)
-            next_day_of_week = next_date.weekday()
-            next_month = next_date.month
-            
-            # Features for prediction (keep as DataFrame)
-            future_features = pd.DataFrame({
-                'Historical_Sales': [last_row['Historical_Sales']],
-                'Promotion': [0],
-                'Day_of_Week': [next_day_of_week],
-                'Month': [next_month],
-                'Product_ID': [product_id]
-            })
-            
-            # Preprocess future data
-            future_X = pd.get_dummies(future_features, columns=['Product_ID'], drop_first=True)
-            future_X = future_X.reindex(columns=feature_names, fill_value=0)  # Align with training columns
-            
-            # Scale but keep as DataFrame with column names
-            future_X_scaled = pd.DataFrame(feature_scaler.transform(future_X), columns=feature_names)
-            
-            # Predict demand
-            pred_demand = model.predict(future_X_scaled)[0]
-            
-            # Store prediction
-            all_predictions.append({
-                'predicted_date': next_date,
-                'predicted_product_id': product_id,
-                'predicted_product_name': last_row['Product_name'],
-                'predicted_demand': pred_demand
-            })
+@app.get("/supplier_signup")
+async def supplier_signup_page(request: Request):
+    return templates.TemplateResponse("supplier_signup.html", {"request": request})
 
-    # Create output DataFrame
-    output_df = pd.DataFrame(all_predictions)
+# Shopkeeper Signup Model
+class ShopkeeperSignup(BaseModel):
+    name: str
+    email: EmailStr
+    shop_name: str
+    location_name: str
+    latitude: float
+    longitude: float
+    domain: str
+    password: str
+
+# Supplier Signup Model
+class SupplierSignup(BaseModel):
+    name: str
+    email: EmailStr
+    company_name: str
+    location_name: str
+    latitude: float
+    longitude: float
+    password: str
+
+@app.post("/submit_shopkeeper/")
+async def submit_shopkeeper(
+    name: str = Form(...),
+    email: EmailStr = Form(...),
+    shop_name: str = Form(...),
+    location_name: str = Form(...),
+    latitude: float = Form(...),
+    longitude: float = Form(...),
+    domain: str = Form(...),
+    password: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    existing_shopkeeper = db.query(ShopKeeper).filter(ShopKeeper.email == email).first()
+    if existing_shopkeeper:
+        raise HTTPException(status_code=400, detail="Email already registered!")
     
-    # Select top 3 predicted demands
-    top_3_df = output_df.nlargest(3, 'predicted_demand')
+    password_hash = hashpw(password.encode('utf-8'), gensalt()).decode('utf-8')
+    new_shopkeeper = ShopKeeper(
+        name=name,
+        email=email,
+        shop_name=shop_name,
+        location_name=location_name,
+        latitude=latitude,
+        longitude=longitude,
+        domain=domain,
+        password_hash=password_hash
+    )
+    db.add(new_shopkeeper)
+    db.commit()
+    db.refresh(new_shopkeeper)
+    return {"message": "Shopkeeper Sign-up successful!", "shop_keeper_id": new_shopkeeper.shop_keeper_id}
+
+@app.post("/submit_supplier/")
+async def submit_supplier(
+    name: str = Form(...),
+    company_name: str = Form(...),
+    location_name: str = Form(...),
+    latitude: float = Form(...),
+    longitude: float = Form(...),
+    password: str = Form(...),
+    industry: str = Form(None), 
+    db: Session = Depends(get_db)
+):
     
-    # Save predictions (format date as string for CSV)
-    output_df_to_save = top_3_df.copy()
-    output_df_to_save['predicted_date'] = output_df_to_save['predicted_date'].dt.strftime('%Y-%m-%d')
-    output_file = 'data/predictions.csv'
-    output_df_to_save.to_csv(output_file, index=False)
-    print(f"Top 3 predictions saved to '{output_file}'")
+    password_hash = hashpw(password.encode('utf-8'), gensalt()).decode('utf-8')
+    new_supplier = MainSupplier(
+        name=name,
+        company_name=company_name,
+        location_name=location_name,
+        latitude=latitude,
+        longitude=longitude,
+        industry=industry, 
+        password_hash=password_hash
+    )
+    db.add(new_supplier)
+    db.commit()
+    db.refresh(new_supplier)
+    return {"message": "Supplier Sign-up successful!", "supplier_id": new_supplier.supplier_id}
 
-    # Visualize predictions (only top 3)
-    print("Generating visualization for top 3 predictions...")
-    plot_predictions(df, top_3_df)
-
-    return top_3_df
-
-if __name__ == "__main__":
-    input_file = 'data/multi_shop_data.csv'
-
-    forecast_days = 3  # Kept as 3 per your run
-    predictions = generate_predictions(input_file, forecast_days)
-    print("\nTop 3 predictions by predicted_demand:")
-    print(predictions)
